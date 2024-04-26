@@ -1,61 +1,98 @@
 import streamlit as st
-import pandas as pd
 import numpy as np
-from tensorflow.keras.models import load_model
+import pandas as pd
+import matplotlib.pyplot as plt
+import yfinance as yf
 from sklearn.preprocessing import MinMaxScaler
+from keras.models import Sequential, load_model
+from keras.layers import Dense, Dropout, LSTM
 
-# Load the trained LSTM model
-model = load_model('your_model_path.h5')
+# Disable the warning
+st.set_option('deprecation.showPyplotGlobalUse', False)
 
-# Load the dataset
-# Assuming you have a CSV file containing historical stock prices
-data = pd.read_csv('your_dataset.csv')
+# Download data
+start = '2012-01-01'
+end = '2024-1-10'
+stocks = ['GOOG', 'TSLA', 'AAPL', 'CSCO', 'MSFT']
+selected_stock = st.sidebar.selectbox('Select Stock', stocks)
+data = yf.download(selected_stock, start, end)
+data.reset_index(inplace=True)
 
-# Function to prepare data for prediction
-def prepare_data(df, look_back=60):
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled_data = scaler.fit_transform(df['Close'].values.reshape(-1,1))
-    x_test = []
-    for i in range(look_back, len(df)):
-        x_test.append(scaled_data[i-look_back:i, 0])
-    x_test = np.array(x_test)
-    x_test = np.reshape(x_test, (x_test.shape[0], x_test.shape[1], 1))
-    return x_test, scaler
+# Prepare data
+data.dropna(inplace=True)
+data_train = data.Close[0: int(len(data)*0.80)]
+data_test = data.Close[int(len(data)*0.80):]
 
-# Function to predict future stock prices
-def predict_stock_price(model, data, scaler, days=30):
-    predictions = []
-    last_sequence = data[-60:]
-    for _ in range(days):
-        prediction = model.predict(np.array([last_sequence]))
-        prediction = scaler.inverse_transform(prediction)[0][0]
-        predictions.append(prediction)
-        last_sequence = np.append(last_sequence[1:], prediction)
-    return predictions
+scaler = MinMaxScaler(feature_range=(0, 1))
+data_train_scaled = scaler.fit_transform(data_train.values.reshape(-1, 1))
+
+x_train, y_train = [], []
+for i in range(100, len(data_train_scaled)):
+    x_train.append(data_train_scaled[i-100:i, 0])
+    y_train.append(data_train_scaled[i, 0])
+x_train, y_train = np.array(x_train), np.array(y_train)
+x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
+
+# Define and train LSTM model
+model = Sequential()
+model.add(LSTM(units=50, activation='relu', return_sequences=True, input_shape=(x_train.shape[1], 1)))
+model.add(Dropout(0.2))
+model.add(LSTM(units=60, activation='relu', return_sequences=True))
+model.add(Dropout(0.3))
+model.add(LSTM(units=80, activation='relu', return_sequences=True))
+model.add(Dropout(0.4))
+model.add(LSTM(units=120, activation='relu'))
+model.add(Dropout(0.5))
+model.add(Dense(units=1))
+model.compile(optimizer='adam', loss='mean_squared_error')
+model.fit(x_train, y_train, epochs=50, batch_size=32, verbose=1)
+
+# Save the trained LSTM model
+model.save("lstm_model.h5")
+
+# Load the saved model
+loaded_model = load_model("lstm_model.h5")
 
 # Streamlit app
-def main():
-    st.title('Stock Price Predictor')
+st.title('Stock Forecast App')
 
-    # Sidebar for user input
-    st.sidebar.title('Options')
-    selected_stock = st.sidebar.selectbox('Select Stock Symbol', data['Symbol'].unique())
-    prediction_days = st.sidebar.slider('Number of Days for Prediction', min_value=1, max_value=365, value=30)
+# Sidebar for user input
+st.sidebar.title('Options')
+n_years = st.sidebar.slider('Years of prediction:', 1, 4)
+period = n_years * 365
 
-    # Filter data for selected stock
-    stock_data = data[data['Symbol'] == selected_stock].copy()
+# Plot moving averages
+ma_100_days = data.Close.rolling(100).mean()
+ma_200_days = data.Close.rolling(200).mean()
 
-    # Prepare data for prediction
-    x_test, scaler = prepare_data(stock_data)
+fig_ma_100, ax_ma_100 = plt.subplots(figsize=(10, 6))
+ax_ma_100.plot(ma_100_days, 'r', label='MA 100 days')
+ax_ma_100.plot(data.Close, 'g', label='Close')
+ax_ma_100.set_xlabel('Date')
+ax_ma_100.set_ylabel('Price')
+ax_ma_100.set_title('Stock Prices Over Time (100-Day MA)')
+ax_ma_100.legend()
+st.pyplot(fig_ma_100)
 
-    # Button to trigger prediction
-    if st.button('Predict'):
-        # Predict future stock prices
-        predictions = predict_stock_price(model, x_test, scaler, prediction_days)
-        
-        # Display predictions
-        st.write(f'Predicted Stock Prices for the next {prediction_days} days:')
-        st.write(predictions)
+fig_ma_200, ax_ma_200 = plt.subplots(figsize=(10, 6))
+ax_ma_200.plot(ma_200_days, 'b', label='MA 200 days')
+ax_ma_200.plot(data.Close, 'g', label='Close')
+ax_ma_200.set_xlabel('Date')
+ax_ma_200.set_ylabel('Price')
+ax_ma_200.set_title('Stock Prices Over Time (200-Day MA)')
+ax_ma_200.legend()
+st.pyplot(fig_ma_200)
 
-if __name__ == '__main__':
-    main()
+# Plot predicted values
+st.subheader('Predicted Values')
+fig_pred, ax_pred = plt.subplots(figsize=(10, 6))
+ax_pred.plot(data['Date'][-period:], data['Close'][-period:], label='Actual')
+ax_pred.set_xlabel('Date')
+ax_pred.set_ylabel('Price')
+ax_pred.set_title('Predicted Stock Prices')
+ax_pred.legend()
+st.pyplot(fig_pred)
+
+# Display contact information
+st.sidebar.subheader('Contact Information')
+st.sidebar.text('Developer: Your Name')
